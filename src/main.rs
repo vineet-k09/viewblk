@@ -161,7 +161,7 @@ fn build_default_config() -> Config {
         "/dev/nvme0n1p7".to_string(),
         PartitionCustomInfo {
             name: "Fedora OS & Home".to_string(),
-            description: Some("Linux system root (/) and user home (/home)".to_string()),
+            description: Some("Linux system root (/) and user home (/home) [Btrfs Pool]".to_string()),
             category: Some("System".to_string()),
         },
     );
@@ -169,9 +169,9 @@ fn build_default_config() -> Config {
     partitions.insert(
         "/dev/nvme0n1p2".to_string(),
         PartitionCustomInfo {
-            name: "Game Development".to_string(),
-            description: Some("Game dev projects, assets & builds (/gd)".to_string()),
-            category: Some("Gamedev".to_string()),
+            name: "Fedora OS Pool".to_string(),
+            description: Some("Pooled Btrfs storage for Fedora root & home (/)".to_string()),
+            category: Some("System".to_string()),
         },
     );
 
@@ -355,6 +355,40 @@ fn parse_mounts() -> HashMap<String, Vec<String>> {
             }
         }
     }
+
+    // Detect multi-device Btrfs pools via /sys/fs/btrfs/
+    let btrfs_sys = Path::new("/sys/fs/btrfs");
+    if let Ok(entries) = fs::read_dir(btrfs_sys) {
+        for entry in entries.flatten() {
+            let dev_dir = entry.path().join("devices");
+            if dev_dir.is_dir() {
+                if let Ok(dev_entries) = fs::read_dir(&dev_dir) {
+                    let pool_devs: Vec<String> = dev_entries
+                        .flatten()
+                        .map(|d| format!("/dev/{}", d.file_name().to_string_lossy()))
+                        .collect();
+
+                    let mut pool_mounts = Vec::new();
+                    for d in &pool_devs {
+                        if let Some(mps) = mounts.get(d) {
+                            for mp in mps {
+                                if !pool_mounts.contains(mp) {
+                                    pool_mounts.push(mp.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    if !pool_mounts.is_empty() {
+                        for d in pool_devs {
+                            mounts.entry(d).or_insert_with(|| pool_mounts.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     mounts
 }
 
@@ -367,6 +401,19 @@ fn get_fstype_from_mounts(dev_path: &str) -> String {
             }
         }
     }
+
+    // Check if device is part of a Btrfs pool
+    if let Some(dev_name) = dev_path.strip_prefix("/dev/") {
+        let btrfs_sys = Path::new("/sys/fs/btrfs");
+        if let Ok(entries) = fs::read_dir(btrfs_sys) {
+            for entry in entries.flatten() {
+                if entry.path().join("devices").join(dev_name).exists() {
+                    return "btrfs".to_string();
+                }
+            }
+        }
+    }
+
     String::new()
 }
 
